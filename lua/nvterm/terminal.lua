@@ -140,6 +140,88 @@ nvterm.toggle = function(type)
   end
 end
 
+-- Get the directory of the current buffer, fallback to git root or cwd
+local function get_buffer_dir()
+  local buf_path = a.nvim_buf_get_name(0)
+  -- Empty buffer or terminal buffer
+  if buf_path == '' or buf_path:match('^term://') then
+    local git_root = vim.fn.systemlist('git rev-parse --show-toplevel')[1]
+    return vim.v.shell_error == 0 and git_root or vim.fn.getcwd()
+  end
+  return vim.fn.fnamemodify(buf_path, ':h')
+end
+
+-- Find terminal by current buffer
+local function get_term_by_buf(buf)
+  if not terminals.list then
+    return nil
+  end
+  for _, term in ipairs(terminals.list) do
+    if term.buf == buf then
+      return term
+    end
+  end
+  return nil
+end
+
+-- Create a new terminal with a specific type_key but using base_type's window settings
+local function new_with_type_key(base_type, type_key, dir)
+  local win = create_term_window(base_type)
+  local buf = a.nvim_create_buf(false, true)
+  a.nvim_buf_set_option(buf, "filetype", "terminal")
+  a.nvim_buf_set_option(buf, "buflisted", false)
+  a.nvim_win_set_buf(win, buf)
+
+  local job_id = vim.fn.termopen(terminals.shell or vim.o.shell, { cwd = dir })
+  local id = #terminals.list + 1
+  local term = { id = id, win = win, buf = buf, open = true, type = type_key, base_type = base_type, job_id = job_id, dir = dir }
+  terminals.list[id] = term
+  vim.cmd "startinsert"
+  return term
+end
+
+-- Show terminal using its base_type for window creation
+local function show_term_with_base_type(term)
+  term.win = create_term_window(term.base_type or term.type)
+  a.nvim_win_set_buf(term.win, term.buf)
+  terminals.list[term.id].open = true
+  vim.cmd "startinsert"
+end
+
+-- Toggle terminal per current buffer's directory
+nvterm.toggle_per_path = function(type)
+  terminals = util.verify_terminals(terminals)
+
+  -- If currently in a terminal buffer, toggle that terminal or use its dir
+  local current_buf = a.nvim_get_current_buf()
+  local current_term = get_term_by_buf(current_buf)
+
+  local dir
+  if current_term then
+    if current_term.base_type == type then
+      -- Same type, just hide it
+      nvterm.hide_term(current_term)
+      return
+    end
+    -- Different type, use current terminal's dir
+    dir = current_term.dir
+  end
+
+  -- Get dir from buffer if not in a terminal
+  dir = dir or get_buffer_dir()
+  local type_key = type .. '_' .. vim.fn.sha256(dir):sub(1, 8)
+
+  local term = get_type_last(type_key)
+
+  if not term then
+    term = new_with_type_key(type, type_key, dir)
+  elseif term.open then
+    nvterm.hide_term(term)
+  else
+    show_term_with_base_type(term)
+  end
+end
+
 nvterm.toggle_all_terms = function()
   terminals = util.verify_terminals(terminals)
 
